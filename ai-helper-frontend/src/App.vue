@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { buildChatStreamUrl } from './api/chat'
+import { renderMarkdownToHtml } from './utils/markdown'
 
 /** Java int 范围内的会话 ID（memoryId） */
 function randomMemoryId() {
@@ -12,10 +13,17 @@ const input = ref('')
 const messages = ref([])
 const streaming = ref(false)
 const chatBodyRef = ref(null)
+/** 中文等 IME 组字过程中为 true，避免选词/上屏时的 Enter 误触发发送 */
+const imeActive = ref(false)
+/** 用户点击「终止」关闭 SSE 时置位，避免 onerror 误填「未能收到回复」 */
+const pendingUserAbort = ref(false)
 
 let es = null
 
-const canSend = computed(() => input.value.trim().length > 0 && !streaming.value)
+/** 回复中主按钮为终止，否则无内容时禁用发送 */
+const composerPrimaryDisabled = computed(
+  () => !streaming.value && input.value.trim().length === 0,
+)
 
 function scrollToBottom() {
   nextTick(() => {
@@ -44,6 +52,8 @@ function sendMessage() {
   const text = input.value.trim()
   if (!text || streaming.value) return
 
+  pendingUserAbort.value = false
+
   messages.value.push({ role: 'user', content: text })
   messages.value.push({ role: 'assistant', content: '', streaming: true })
   input.value = ''
@@ -59,12 +69,14 @@ function sendMessage() {
   }
 
   es.onerror = () => {
+    const userStopped = pendingUserAbort.value
+    pendingUserAbort.value = false
     stopStream()
     streaming.value = false
     const last = messages.value[messages.value.length - 1]
     if (last && last.role === 'assistant') {
       delete last.streaming
-      if (!last.content.trim()) {
+      if (!userStopped && !last.content.trim()) {
         last.content =
           '未能收到回复内容。请确认后端已启动，且存在 GET /api/ai/chat；本地开发可执行 npm run dev 使用代理避免跨域。'
       }
@@ -72,18 +84,46 @@ function sendMessage() {
   }
 }
 
+function abortReply() {
+  pendingUserAbort.value = true
+  stopStream()
+  streaming.value = false
+  const last = messages.value[messages.value.length - 1]
+  if (last && last.role === 'assistant') {
+    delete last.streaming
+  }
+}
+
 function handleSend() {
   sendMessage()
 }
 
-function onKeydown(e) {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault()
+function onComposerPrimaryClick() {
+  if (streaming.value) {
+    abortReply()
+  } else {
     handleSend()
   }
 }
 
+function onImeCompositionStart() {
+  imeActive.value = true
+}
+
+function onImeCompositionEnd() {
+  imeActive.value = false
+}
+
+function onKeydown(e) {
+  if (e.key !== 'Enter' || e.shiftKey) return
+  // IME 组字或选词：Enter 用于确认，不应发送（229 为部分浏览器在 IME 处理时的 keyCode）
+  if (e.isComposing || imeActive.value || e.keyCode === 229) return
+  e.preventDefault()
+  onComposerPrimaryClick()
+}
+
 function newSession() {
+  pendingUserAbort.value = false
   stopStream()
   streaming.value = false
   memoryId.value = randomMemoryId()
@@ -130,7 +170,12 @@ onUnmounted(() => {
         >
           <div class="bubble" :class="msg.role === 'user' ? 'bubble--user' : 'bubble--ai'">
             <span class="bubble-label">{{ msg.role === 'user' ? '我' : 'AI' }}</span>
-            <div class="bubble-text">{{ msg.content }}</div>
+            <div
+              v-if="msg.role === 'assistant'"
+              class="bubble-text markdown-body"
+              v-html="renderMarkdownToHtml(msg.content)"
+            ></div>
+            <div v-else class="bubble-text bubble-text--plain">{{ msg.content }}</div>
             <span v-if="msg.streaming" class="cursor-blink" aria-hidden="true">▍</span>
           </div>
         </div>
@@ -143,10 +188,18 @@ onUnmounted(() => {
           rows="2"
           placeholder="输入你的问题…（Enter 发送，Shift+Enter 换行）"
           :disabled="streaming"
+          @compositionstart="onImeCompositionStart"
+          @compositionend="onImeCompositionEnd"
           @keydown="onKeydown"
         />
-        <button type="button" class="btn-send" :disabled="!canSend" @click="handleSend">
-          {{ streaming ? '回复中…' : '发送' }}
+        <button
+          type="button"
+          class="btn-send"
+          :class="{ 'btn-send--stop': streaming }"
+          :disabled="composerPrimaryDisabled"
+          @click="onComposerPrimaryClick"
+        >
+          {{ streaming ? '终止' : '发送' }}
         </button>
       </footer>
     </main>
@@ -289,8 +342,130 @@ onUnmounted(() => {
 }
 
 .bubble-text {
-  white-space: pre-wrap;
   word-break: break-word;
+}
+
+.bubble-text--plain {
+  white-space: pre-wrap;
+}
+
+/* Markdown（AI） */
+.markdown-body :deep(p) {
+  margin: 0 0 0.65em;
+}
+
+.markdown-body :deep(p:last-child) {
+  margin-bottom: 0;
+}
+
+.markdown-body :deep(h1),
+.markdown-body :deep(h2),
+.markdown-body :deep(h3),
+.markdown-body :deep(h4) {
+  margin: 0.85em 0 0.45em;
+  font-weight: 600;
+  line-height: 1.35;
+  color: #e8eaed;
+}
+
+.markdown-body :deep(h1) {
+  font-size: 1.25rem;
+}
+.markdown-body :deep(h2) {
+  font-size: 1.1rem;
+}
+.markdown-body :deep(h3),
+.markdown-body :deep(h4) {
+  font-size: 1rem;
+}
+
+.markdown-body :deep(h1:first-child),
+.markdown-body :deep(h2:first-child),
+.markdown-body :deep(h3:first-child) {
+  margin-top: 0;
+}
+
+.markdown-body :deep(ul),
+.markdown-body :deep(ol) {
+  margin: 0.35em 0 0.65em;
+  padding-left: 1.35rem;
+}
+
+.markdown-body :deep(li) {
+  margin: 0.2em 0;
+}
+
+.markdown-body :deep(blockquote) {
+  margin: 0.5em 0;
+  padding: 0.35rem 0.65rem;
+  border-left: 3px solid rgba(168, 199, 250, 0.45);
+  background: rgba(0, 0, 0, 0.2);
+  color: rgba(232, 234, 237, 0.88);
+}
+
+.markdown-body :deep(pre) {
+  margin: 0.5em 0;
+  padding: 0.65rem 0.75rem;
+  border-radius: 8px;
+  overflow-x: auto;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.markdown-body :deep(code) {
+  font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace;
+  font-size: 0.88em;
+}
+
+.markdown-body :deep(p > code),
+.markdown-body :deep(li > code) {
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.35);
+  color: #c4e0a4;
+}
+
+.markdown-body :deep(pre code) {
+  padding: 0;
+  background: none;
+  color: #d4d4d4;
+  font-size: inherit;
+}
+
+.markdown-body :deep(a) {
+  color: #8ab4f8;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.markdown-body :deep(a:hover) {
+  color: #a8c7fa;
+}
+
+.markdown-body :deep(table) {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+  margin: 0.5em 0;
+}
+
+.markdown-body :deep(th),
+.markdown-body :deep(td) {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+}
+
+.markdown-body :deep(th) {
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.markdown-body :deep(hr) {
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  margin: 0.75em 0;
 }
 
 .bubble--user {
@@ -367,5 +542,14 @@ onUnmounted(() => {
 .btn-send:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.btn-send--stop {
+  background: linear-gradient(135deg, #f6aea9 0%, #e57373 100%);
+  color: #1a0f0f;
+}
+
+.btn-send--stop:hover:not(:disabled) {
+  filter: brightness(1.06);
 }
 </style>
