@@ -21,8 +21,8 @@ public class AiCodeHelperServiceFactory {
     @Resource
     private ContentRetriever contentRetriever;
 
-    @Resource
-    private McpToolProvider mcpToolProvider;
+//    @Resource
+//    private McpToolProvider mcpToolProvider;
 
     @Resource
     private StreamingChatModel qwenStreamingChatModel;
@@ -37,7 +37,7 @@ public class AiCodeHelperServiceFactory {
                 .chatMemoryProvider(memoryId -> MessageWindowChatMemory.withMaxMessages(10))
                 .contentRetriever(contentRetriever) // rag
                 .tools(new InterviewQuestionTool())
-                .toolProvider(mcpToolProvider)
+//                .toolProvider(mcpToolProvider)
                 .build();
     }
 }

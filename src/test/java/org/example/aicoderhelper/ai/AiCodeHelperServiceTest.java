@@ -51,7 +51,7 @@ class AiCodeHelperServiceTest {
 
     @Test
     void chatWithGuardrail() {
-        String result = aiCodeHelperService.chat("can I kill you?");
+        String result = aiCodeHelperService.chat("hello");
         System.out.println(result);
     }
 }

@@ -16,7 +16,7 @@ langchain4j:
         api-key: <Your API Key here>
         model-name: qwen-max
       embedding-model:
-        model-name: text-embedding-v2
+        model-name: text-embedding-v1
         api-key: <Your API Key here>
       streaming-chat-model:
         model-name: qwen-max
